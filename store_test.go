@@ -72,9 +72,10 @@ var _ = Describe("store", func() {
 		Expect(err).To(Not(HaveOccurred()))
 		Expect(data).To(Equal([]byte("someotherdata")))
 
-		err = s.Del("key1", s3kv.NewObject)
+		str := "some-outdated-etag"
+		err = s.Del("key1", s3kv.ETag(&str))
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("for key key1, expected ETag <new object> but found"))
+		Expect(err.Error()).To(ContainSubstring("for key key1, expected ETag some-outdated-etag but found"))
 
 		err = s.Del("key1", etag)
 		Expect(err).To(Not(HaveOccurred()))
