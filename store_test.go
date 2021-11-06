@@ -53,6 +53,11 @@ var _ = Describe("store", func() {
 		Expect(data).To(BeNil())
 		Expect(etag).To(BeNil())
 
+		s1 := "key-already-exists"
+		_, err = s.Set("key1", []byte("somedata"), s3kv.ETag(&s1))
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("for key key1, expected ETag key-already-exists but found <new object>"))
+
 		etag, err = s.Set("key1", []byte("somedata"), s3kv.NewObject)
 		Expect(err).To(Not(HaveOccurred()))
 		Expect(etag).To(Not(BeNil()))
@@ -72,12 +77,17 @@ var _ = Describe("store", func() {
 		Expect(err).To(Not(HaveOccurred()))
 		Expect(data).To(Equal([]byte("someotherdata")))
 
-		str := "some-outdated-etag"
-		err = s.Del("key1", s3kv.ETag(&str))
+		s2 := "some-outdated-etag"
+		err = s.Del("key1", s3kv.ETag(&s2))
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("for key key1, expected ETag some-outdated-etag but found"))
 
 		err = s.Del("key1", etag)
 		Expect(err).To(Not(HaveOccurred()))
+
+		data, etag, err = s.Get("key1")
+		Expect(err).To(Not(HaveOccurred()))
+		Expect(data).To(BeNil())
+		Expect(etag).To(BeNil())
 	})
 })
