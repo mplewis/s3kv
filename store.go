@@ -24,6 +24,13 @@ type store struct {
 	cache  map[string]ETag
 }
 
+// New creates a new key-value store backed by an S3 bucket.
+func New(bucket string) Store {
+	sess := session.Must(session.NewSession())
+	svc := s3.New(sess)
+	return store{svc, bucket, map[string]ETag{}}
+}
+
 // Get returns the value and ETag for the given key.
 func (s store) Get(key string) ([]byte, ETag, error) {
 	resp, err := s.s3.GetObject(&s3.GetObjectInput{Bucket: &s.bucket, Key: &key})
@@ -101,11 +108,4 @@ func notFound(err error) bool {
 	default:
 		return false
 	}
-}
-
-// New creates a new key-value store backed by an S3 bucket.
-func New(bucket string) Store {
-	sess := session.Must(session.NewSession())
-	svc := s3.New(sess)
-	return store{svc, bucket, map[string]ETag{}}
 }
