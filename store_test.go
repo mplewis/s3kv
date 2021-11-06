@@ -57,6 +57,9 @@ var _ = Describe("store", func() {
 		_, err = s.Set("key1", []byte("somedata"), s3kv.ETag(&s1))
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("for key key1, expected ETag key-already-exists but found <new object>"))
+		e, ok := err.(s3kv.StaleETagError)
+		Expect(ok).To(BeTrue())
+		Expect(e.Key).To(Equal("key1"))
 
 		etag, err = s.Set("key1", []byte("somedata"), s3kv.NewObject)
 		Expect(err).To(Not(HaveOccurred()))

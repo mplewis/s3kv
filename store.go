@@ -11,10 +11,19 @@ import (
 )
 
 // Store is a key-value store backed by an S3 bucket.
+// Its operations are atomic and require you to provide the expected state of the blob as an ETag before you mutate it.
+// If the state you provide is out of date, you must fetch the value and ETag again before retrying.
+//
+// Get returns the value and ETag for the given key.
+//
+// Set sets the value for the given key, ensuring the expected ETag matches the actual ETag.
+// If you are setting a value for a new key, use the `S3kv.NewObject` sigil for your expected ETag.
+//
+// Del deletes the value for the given key, ensuring the expected ETag matches the actual ETag.
 type Store interface {
 	Get(key string) ([]byte, ETag, error)
-	Set(key string, value []byte, xETag ETag) (ETag, error)
-	Del(key string, xETag ETag) error
+	Set(key string, value []byte, expectedETag ETag) (ETag, error)
+	Del(key string, expectedETag ETag) error
 }
 
 // store is the implementation of Store.
@@ -24,6 +33,20 @@ type store struct {
 	cache  map[string]ETag
 }
 
+// StaleETagError is the error returned when an operation fails because the expected ETag did not match the actual ETag.
+type StaleETagError struct {
+	Key string
+	// These should not be accessible to users. To get a fresh ETag, call `Store.Get`.
+	// Reverse-engineering the expected ETag out of the error string is a bad idea.
+	expected ETag
+	actual   ETag
+}
+
+// Error converts a StaleETagError error into a human-readable string.
+func (e StaleETagError) Error() string {
+	return fmt.Sprintf("for key %s, expected ETag %s but found %s", e.Key, str(e.expected), str(e.actual))
+}
+
 // New creates a new key-value store backed by an S3 bucket.
 func New(bucket string) Store {
 	sess := session.Must(session.NewSession())
@@ -31,7 +54,6 @@ func New(bucket string) Store {
 	return store{svc, bucket, map[string]ETag{}}
 }
 
-// Get returns the value and ETag for the given key.
 func (s store) Get(key string) ([]byte, ETag, error) {
 	resp, err := s.s3.GetObject(&s3.GetObjectInput{Bucket: &s.bucket, Key: &key})
 	if notFound(err) {
@@ -49,8 +71,6 @@ func (s store) Get(key string) ([]byte, ETag, error) {
 	return data, et, nil
 }
 
-// Set sets the value for the given key, making sure that the expected ETag matches the actual ETag.
-// If you are setting a value for a new key, use the S3kv.NewObject sigil for your expected ETag.
 func (s store) Set(key string, value []byte, xETag ETag) (ETag, error) {
 	err := s.check(key, xETag)
 	if err != nil {
@@ -65,7 +85,6 @@ func (s store) Set(key string, value []byte, xETag ETag) (ETag, error) {
 	return et, nil
 }
 
-// Del deletes the value for the given key, making sure that the expected ETag matches the actual ETag.
 func (s store) Del(key string, xETag ETag) error {
 	err := s.check(key, xETag)
 	if err != nil {
@@ -91,7 +110,7 @@ func (s store) check(key string, xETag ETag) error {
 		aETag = et
 	}
 	if !cmp(xETag, aETag) {
-		return fmt.Errorf("for key %s, expected ETag %s but found %s", key, str(xETag), str(aETag))
+		return StaleETagError{key, xETag, aETag}
 	}
 	return nil
 }
