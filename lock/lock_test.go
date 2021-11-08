@@ -1,7 +1,6 @@
 package lock_test
 
 import (
-	"fmt"
 	"testing"
 	"time"
 
@@ -21,14 +20,11 @@ var _ = Describe("Lock", func() {
 	It("works as intended", func() {
 		l := lock.New()
 
-		s := time.Now()
 		r := l.Acquire(t50ms)
 		Expect(r).To(BeTrue())
-		fmt.Println(time.Since(s))
 
 		r = l.Acquire(t50ms)
-		Expect(r).To(Not(BeTrue()))
-		fmt.Println(time.Since(s))
+		Expect(r).To(BeFalse())
 
 		go func() {
 			time.Sleep(25 * time.Millisecond)
@@ -37,9 +33,6 @@ var _ = Describe("Lock", func() {
 
 		r = l.Acquire(t50ms)
 		Expect(r).To(BeTrue())
-		fmt.Println(time.Since(s))
 		l.Release()
-
-		Expect(false).To(BeTrue())
 	})
 })
