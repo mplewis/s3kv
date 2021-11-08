@@ -1,6 +1,7 @@
 package lock_test
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -34,5 +35,18 @@ var _ = Describe("Lock", func() {
 		r = l.Acquire(t50ms)
 		Expect(r).To(BeTrue())
 		l.Release()
+	})
+
+	It("runs the lock stress test", func() {
+		l := lock.New()
+		var r bool
+		for i := 0; i < 1000; i++ {
+			s := time.Now()
+			r = l.Acquire(2000 * time.Millisecond)
+			Expect(r).To(BeTrue())
+			l.Release()
+			fmt.Printf("Acquired and released in %d ns\n", time.Since(s).Nanoseconds())
+		}
+		Expect(false).To(BeTrue())
 	})
 })

@@ -8,6 +8,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/mplewis/s3kv/cache"
+	"github.com/mplewis/s3kv/etag"
 )
 
 // Store is a key-value store backed by an S3 bucket.
@@ -21,40 +23,47 @@ import (
 //
 // Del deletes the value for the given key, ensuring the expected ETag matches the actual ETag.
 type Store interface {
-	Get(key string) ([]byte, ETag, error)
-	Set(key string, value []byte, expectedETag ETag) (ETag, error)
-	Del(key string, expectedETag ETag) error
+	Get(key string) ([]byte, etag.ETag, error)
+	Set(key string, value []byte, expectedETag etag.ETag) (etag.ETag, error)
+	Del(key string, expectedETag etag.ETag) error
 }
 
 // store is the implementation of Store.
 type store struct {
 	s3     *s3.S3
 	bucket string
-	cache  map[string]ETag
+	cache  *cache.Locked
 }
+
+var NewObject = etag.NewObject
 
 // StaleETagError is the error returned when an operation fails because the expected ETag did not match the actual ETag.
 type StaleETagError struct {
 	Key string
 	// These should not be accessible to users. To get a fresh ETag, call `Store.Get`.
 	// Reverse-engineering the expected ETag out of the error string is a bad idea.
-	expected ETag
-	actual   ETag
+	expected etag.ETag
+	actual   etag.ETag
+}
+
+// cacheLockErr builds an error message for failures to acquire the cache lock.
+func cacheLockErr(action string, key string) error {
+	return fmt.Errorf("could not acquire cache lock to %s %s", action, key)
 }
 
 // Error converts a StaleETagError error into a human-readable string.
 func (e StaleETagError) Error() string {
-	return fmt.Sprintf("for key %s, expected ETag %s but found %s", e.Key, str(e.expected), str(e.actual))
+	return fmt.Sprintf("for key %s, expected ETag %s but found %s", e.Key, etag.Str(e.expected), etag.Str(e.actual))
 }
 
 // New creates a new key-value store backed by an S3 bucket.
 func New(bucket string) Store {
 	sess := session.Must(session.NewSession())
 	svc := s3.New(sess)
-	return store{svc, bucket, map[string]ETag{}}
+	return store{svc, bucket, cache.New()}
 }
 
-func (s store) Get(key string) ([]byte, ETag, error) {
+func (s store) Get(key string) ([]byte, etag.ETag, error) {
 	resp, err := s.s3.GetObject(&s3.GetObjectInput{Bucket: &s.bucket, Key: &key})
 	if notFound(err) {
 		return nil, nil, nil
@@ -66,51 +75,75 @@ func (s store) Get(key string) ([]byte, ETag, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	et := ETag(resp.ETag)
-	s.cache[key] = et
+	et := etag.ETag(resp.ETag)
+
+	r := s.cache.Acquire(key)
+	if !r.Success {
+		return nil, nil, cacheLockErr("get", key)
+	}
+	defer r.Unlocked.Release()
+	r.Unlocked.Set(et)
+
 	return data, et, nil
 }
 
-func (s store) Set(key string, value []byte, xETag ETag) (ETag, error) {
-	err := s.check(key, xETag)
+func (s store) Set(key string, value []byte, xETag etag.ETag) (etag.ETag, error) {
+	var et etag.ETag
+
+	r := s.cache.Acquire(key)
+	if !r.Success {
+		return nil, cacheLockErr("set", key)
+	}
+	defer r.Unlocked.Release()
+
+	err := s.check(r.Unlocked, key, xETag)
 	if err != nil {
 		return nil, err
 	}
+
 	resp, err := s.s3.PutObject(&s3.PutObjectInput{Bucket: &s.bucket, Key: &key, Body: bytes.NewReader(value)})
 	if err != nil {
 		return nil, err
 	}
-	et := ETag(resp.ETag)
-	s.cache[key] = et
+	et = etag.ETag(resp.ETag)
+	r.Unlocked.Set(et)
 	return et, nil
 }
 
-func (s store) Del(key string, xETag ETag) error {
-	err := s.check(key, xETag)
+func (s store) Del(key string, xETag etag.ETag) error {
+	r := s.cache.Acquire(key)
+	if !r.Success {
+		return cacheLockErr("delete", key)
+	}
+	defer r.Unlocked.Release()
+
+	err := s.check(r.Unlocked, key, xETag)
 	if err != nil {
 		return err
 	}
+
 	_, err = s.s3.DeleteObject(&s3.DeleteObjectInput{Bucket: &s.bucket, Key: &key})
 	if err != nil {
 		return err
 	}
-	s.cache[key] = nil
+	r.Unlocked.Set(nil)
 	return nil
 }
 
-// check ensures the expected ETag matches the actual ETag for a key.
-func (s store) check(key string, xETag ETag) error {
-	aETag, ok := s.cache[key]
+// check ensures the expected ETag for this key matches the actual ETag for a key. Returns a StaleETagError if the
+// ETags do not match.
+func (s store) check(uc cache.Unlocked, k string, xETag etag.ETag) error {
+	aETag, ok := uc.Get()
 	if !ok {
-		_, et, err := s.Get(key)
+		_, et, err := s.Get(k)
 		if err != nil {
 			return err
 		}
-		s.cache[key] = et
+		uc.Set(et)
 		aETag = et
 	}
-	if !cmp(xETag, aETag) {
-		return StaleETagError{key, xETag, aETag}
+	if !etag.Cmp(xETag, aETag) {
+		return StaleETagError{k, xETag, aETag}
 	}
 	return nil
 }

@@ -1,4 +1,4 @@
-package s3kv
+package etag
 
 // ETag is a hash representing the contents of an object.
 type ETag *string
@@ -7,7 +7,7 @@ type ETag *string
 var NewObject = ETag(nil)
 
 // str safely converts an ETag to a printable string.
-func str(e ETag) string {
+func Str(e ETag) string {
 	if e == nil {
 		return "<new object>"
 	}
@@ -15,7 +15,7 @@ func str(e ETag) string {
 }
 
 // cmp compares two ETags for equality.
-func cmp(a, b ETag) bool {
+func Cmp(a, b ETag) bool {
 	if a == nil && b == nil {
 		return true
 	}
