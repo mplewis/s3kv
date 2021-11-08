@@ -2,7 +2,6 @@ package s3kv_test
 
 import (
 	"log"
-	"testing"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
@@ -11,11 +10,6 @@ import (
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 )
-
-func TestS3kv(t *testing.T) {
-	RegisterFailHandler(Fail)
-	RunSpecs(t, "S3kv Suite")
-}
 
 const bucket = "mplewis-s3kv-test"
 
