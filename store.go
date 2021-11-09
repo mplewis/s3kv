@@ -2,14 +2,11 @@ package s3kv
 
 import (
 	"bytes"
-	"fmt"
 	"io/ioutil"
 
-	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mplewis/s3kv/cache"
-	"github.com/mplewis/s3kv/etag"
 )
 
 // Store is a key-value store backed by an S3 bucket.
@@ -19,13 +16,13 @@ import (
 // Get returns the value and ETag for the given key.
 //
 // Set sets the value for the given key, ensuring the expected ETag matches the actual ETag.
-// If you are setting a value for a new key, use the `S3kv.NewObject` sigil for your expected ETag.
+// If you are setting a value for a new key, use the `S3kv.ObjectMissing` sigil for your expected ETag.
 //
 // Del deletes the value for the given key, ensuring the expected ETag matches the actual ETag.
 type Store interface {
-	Get(key string) ([]byte, etag.ETag, error)
-	Set(key string, value []byte, expectedETag etag.ETag) (etag.ETag, error)
-	Del(key string, expectedETag etag.ETag) error
+	Get(key string) ([]byte, cache.Taggable, error)
+	Set(key string, value []byte, expectedETag cache.Taggable) (cache.Taggable, error)
+	Del(key string, expectedETag cache.Taggable) error
 }
 
 // store is the implementation of Store.
@@ -35,27 +32,6 @@ type store struct {
 	cache  *cache.Locked
 }
 
-var NewObject = etag.NewObject
-
-// StaleETagError is the error returned when an operation fails because the expected ETag did not match the actual ETag.
-type StaleETagError struct {
-	Key string
-	// These should not be accessible to users. To get a fresh ETag, call `Store.Get`.
-	// Reverse-engineering the expected ETag out of the error string is a bad idea.
-	expected etag.ETag
-	actual   etag.ETag
-}
-
-// cacheLockErr builds an error message for failures to acquire the cache lock.
-func cacheLockErr(action string, key string) error {
-	return fmt.Errorf("could not acquire cache lock to %s %s", action, key)
-}
-
-// Error converts a StaleETagError error into a human-readable string.
-func (e StaleETagError) Error() string {
-	return fmt.Sprintf("for key %s, expected ETag %s but found %s", e.Key, etag.Str(e.expected), etag.Str(e.actual))
-}
-
 // New creates a new key-value store backed by an S3 bucket.
 func New(bucket string) Store {
 	sess := session.Must(session.NewSession())
@@ -63,10 +39,10 @@ func New(bucket string) Store {
 	return store{svc, bucket, cache.New()}
 }
 
-func (s store) Get(key string) ([]byte, etag.ETag, error) {
+func (s store) Get(key string) ([]byte, cache.Taggable, error) {
 	resp, err := s.s3.GetObject(&s3.GetObjectInput{Bucket: &s.bucket, Key: &key})
 	if notFound(err) {
-		return nil, nil, nil
+		return nil, ObjectMissing, nil
 	}
 	if err != nil {
 		return nil, nil, err
@@ -75,7 +51,7 @@ func (s store) Get(key string) ([]byte, etag.ETag, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	et := etag.ETag(resp.ETag)
+	et := cache.Taggable(newTag(resp.ETag))
 
 	r := s.cache.Acquire(key)
 	if !r.Success {
@@ -87,9 +63,7 @@ func (s store) Get(key string) ([]byte, etag.ETag, error) {
 	return data, et, nil
 }
 
-func (s store) Set(key string, value []byte, xETag etag.ETag) (etag.ETag, error) {
-	var et etag.ETag
-
+func (s store) Set(key string, value []byte, xETag cache.Taggable) (cache.Taggable, error) {
 	r := s.cache.Acquire(key)
 	if !r.Success {
 		return nil, cacheLockErr("set", key)
@@ -105,12 +79,12 @@ func (s store) Set(key string, value []byte, xETag etag.ETag) (etag.ETag, error)
 	if err != nil {
 		return nil, err
 	}
-	et = etag.ETag(resp.ETag)
+	et := cache.Taggable(newTag(resp.ETag))
 	r.Unlocked.Set(et)
 	return et, nil
 }
 
-func (s store) Del(key string, xETag etag.ETag) error {
+func (s store) Del(key string, xETag cache.Taggable) error {
 	r := s.cache.Acquire(key)
 	if !r.Success {
 		return cacheLockErr("delete", key)
@@ -130,9 +104,9 @@ func (s store) Del(key string, xETag etag.ETag) error {
 	return nil
 }
 
-// check ensures the expected ETag for this key matches the actual ETag for a key. Returns a StaleETagError if the
-// ETags do not match.
-func (s store) check(uc cache.Unlocked, k string, xETag etag.ETag) error {
+// check ensures the expected tag for this key matches the actual tag for a key.
+// Returns a StaleTagError if the tags do not match.
+func (s store) check(uc cache.Unlocked, k string, xETag cache.Taggable) error {
 	aETag, ok := uc.Get()
 	if !ok {
 		_, et, err := s.Get(k)
@@ -142,22 +116,8 @@ func (s store) check(uc cache.Unlocked, k string, xETag etag.ETag) error {
 		uc.Set(et)
 		aETag = et
 	}
-	if !etag.Cmp(xETag, aETag) {
-		return StaleETagError{k, xETag, aETag}
+	if !xETag.Equal(aETag) {
+		return StaleTagError{k, xETag, aETag}
 	}
 	return nil
-}
-
-// notFound checks if an error is an AWS S3 NoSuchKey error.
-func notFound(err error) bool {
-	aerr, ok := err.(awserr.Error)
-	if !ok {
-		return false
-	}
-	switch aerr.Code() {
-	case s3.ErrCodeNoSuchKey:
-		return true
-	default:
-		return false
-	}
 }
