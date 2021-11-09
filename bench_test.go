@@ -1,21 +1,64 @@
 package s3kv_test
 
 import (
+	"log"
 	"testing"
-	"time"
 
-	"github.com/mplewis/s3kv/multilock"
+	"github.com/mplewis/s3kv"
 )
 
-const (
-	key   = "somekey"
-	t50ms = 50 * time.Millisecond
-)
+var s = s3kv.New(s3kv.S3kvArgs{Bucket: bucket, Session: sess})
 
-func BenchmarkMultilock(b *testing.B) {
-	l := multilock.New()
+func BenchmarkGet(b *testing.B) {
+	keys, done, err := s.Lock("foo")
+	if err != nil {
+		log.Panic(err)
+	}
+	keys["foo"].Set([]byte("bar"))
+	done()
+
 	for i := 0; i < b.N; i++ {
-		l.Acquire(t50ms, key)
-		l.Release(t50ms, key)
+		keys, done, err := s.Lock("foo")
+		if err != nil {
+			log.Panic(err)
+		}
+		keys["foo"].Get()
+		done()
+	}
+}
+
+func BenchmarkSet(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		keys, done, err := s.Lock("foo")
+		if err != nil {
+			log.Panic(err)
+		}
+		keys["foo"].Set([]byte("bar"))
+		done()
+	}
+}
+
+func BenchmarkGetSet(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		keys, done, err := s.Lock("foo")
+		if err != nil {
+			log.Panic(err)
+		}
+		keys["foo"].Get()
+		keys["foo"].Set([]byte("bar"))
+		done()
+	}
+}
+
+func BenchmarkGetSetDel(b *testing.B) {
+	for i := 0; i < b.N; i++ {
+		keys, done, err := s.Lock("foo")
+		if err != nil {
+			log.Panic(err)
+		}
+		keys["foo"].Get()
+		keys["foo"].Set([]byte("bar"))
+		keys["foo"].Del()
+		done()
 	}
 }

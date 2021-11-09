@@ -19,10 +19,14 @@ func New() *MultiLock {
 
 // Acquire acquires the lock for the given key, returning True on success and False on timeout.
 func (m *MultiLock) Acquire(timeout time.Duration, key string) bool {
+	// fmt.Printf("Acquiring lock for key %s\n", key)
+	// fmt.Println("Acquiring lockbox")
 	ok := m.l.TryLockWithTimeout(timeout)
 	if !ok {
+		// fmt.Println("Failed to acquire lockbox")
 		return false
 	}
+	// fmt.Println("Acquired lockbox")
 
 	keyLock, ok := m.locks[key]
 	if !ok {
@@ -30,22 +34,32 @@ func (m *MultiLock) Acquire(timeout time.Duration, key string) bool {
 		m.locks[key] = keyLock
 	}
 	m.l.Unlock()
+	// fmt.Println("Unlocked lockbox")
 
-	return keyLock.TryLockWithTimeout(timeout)
+	ok = keyLock.TryLockWithTimeout(timeout)
+	// fmt.Printf("Lock acquisition for key %s: %t\n", key, ok)
+	return ok
 }
 
 // Release releases the lock for the given key, returning True on success and False on timeout.
 func (m *MultiLock) Release(timeout time.Duration, key string) bool {
+	// fmt.Printf("Releasing lock for key %s\n", key)
+	// fmt.Println("Acquiring lockbox")
 	ok := m.l.TryLockWithTimeout(timeout)
 	if !ok {
+		// fmt.Println("Failed to acquire lockbox")
 		return false
 	}
+	// fmt.Println("Acquired lockbox")
 	defer m.l.Unlock()
 
 	keyLock, ok := m.locks[key]
 	if !ok {
+		// fmt.Printf("No lock found for key %s\n", key)
 		return true
 	}
 	keyLock.Unlock()
+	// fmt.Println("Unlocked lockbox")
+	// fmt.Printf("Released lock for key %s\n", key)
 	return true
 }
