@@ -3,11 +3,7 @@ package s3kv_test
 import (
 	"log"
 	"testing"
-
-	"github.com/mplewis/s3kv"
 )
-
-var s = s3kv.New(s3kv.S3kvArgs{Bucket: bucket, Session: sess})
 
 func BenchmarkGet(b *testing.B) {
 	keys, done, err := s.Lock("foo")

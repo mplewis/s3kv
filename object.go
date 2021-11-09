@@ -9,7 +9,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 )
 
-// FindResult represents whether a value for a given key exists or not.
+// FindResult represents whether a value was found for a given key or not.
 type FindResult bool
 
 const (
@@ -17,11 +17,15 @@ const (
 	NotFound FindResult = false
 )
 
-// Object
+// Object represents an S3 object in the store.
 type Object interface {
+	// Key returns the object's key.
 	Key() string
+	// Get returns the object's value, whether the value exists, and any error that occurred.
 	Get() ([]byte, FindResult, error)
+	// Set sets the value for a given key.
 	Set([]byte) error
+	// Del deletes a key from the store.
 	Del() error
 }
 
@@ -33,6 +37,7 @@ type object struct {
 	stale  bool
 }
 
+// staleErr builds an error for a stale object.
 func (o object) staleErr() error {
 	return fmt.Errorf("object is stale and can no longer be used: %s", o.key)
 }

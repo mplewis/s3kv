@@ -1,60 +1,22 @@
 package s3kv_test
 
 import (
+	"fmt"
 	"log"
+	"strconv"
+	"sync"
+	"time"
 
-	"github.com/aws/aws-sdk-go/aws"
-	"github.com/aws/aws-sdk-go/aws/credentials"
-	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/mplewis/s3kv"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 )
 
-const bucket = "mplewis-s3kv-test"
-
-var client = s3.New(sess)
-var sess = session.Must(session.NewSessionWithOptions(options))
-var options = session.Options{
-	Profile: "localhost",
-	Config: aws.Config{
-		Region:                        aws.String("us-east-1"),
-		Endpoint:                      aws.String("http://localhost:9999"),
-		CredentialsChainVerboseErrors: aws.Bool(true),
-		Credentials:                   credentials.NewStaticCredentials("<access-key>", "<secret-key>", ""),
-		S3ForcePathStyle:              aws.Bool(true),
-	},
-}
-
-func emptyBucket() {
-	resp, err := client.ListObjectsV2(&s3.ListObjectsV2Input{Bucket: aws.String(bucket)})
-	if err != nil {
-		log.Panic(err)
-	}
-	if len(resp.Contents) == 0 {
-		return
-	}
-
-	objects := []*s3.ObjectIdentifier{}
-	for _, obj := range resp.Contents {
-		objects = append(objects, &s3.ObjectIdentifier{Key: obj.Key})
-	}
-	_, err = client.DeleteObjects(&s3.DeleteObjectsInput{
-		Bucket: aws.String(bucket),
-		Delete: &s3.Delete{Objects: objects},
-	})
-	if err != nil {
-		log.Panic(err)
-	}
-}
-
 var _ = Describe("store", func() {
 	BeforeEach(emptyBucket)
 
-	It("runs the demo", func() {
+	It("behaves as expected", func() {
 		// connect to bucket and lock two keys for use
-		s := s3kv.New(s3kv.S3kvArgs{Bucket: bucket, Session: sess})
 		kvs, done, err := s.Lock("foo", "bar")
 		defer done()
 		Expect(err).NotTo(HaveOccurred())
@@ -98,5 +60,90 @@ var _ = Describe("store", func() {
 		_, find, err = o.Get()
 		Expect(err).NotTo(HaveOccurred())
 		Expect(find).To(Equal(s3kv.NotFound))
+	})
+
+	It("passes the atomic stress test", func() {
+		// Skip("this shouldn't run against the cloud")
+		start := time.Now()
+
+		key := "addsub"
+		total := 100
+
+		// set initial value to 0
+		keys, done, err := s.Lock(key)
+		if err != nil {
+			log.Panic(err)
+		}
+		err = keys[key].Set([]byte("0"))
+		if err != nil {
+			log.Panic(err)
+		}
+		done()
+
+		// odd workers add 1, even workers subtract 1
+		worker := func(s s3kv.Store, id int, delta int) {
+			keys, done, err := s.Lock(key)
+			if err != nil {
+				log.Panic(err)
+			}
+			defer done()
+			o := keys[key]
+			val, find, err := o.Get()
+			if err != nil {
+				log.Panic(err)
+			}
+			if find == s3kv.NotFound {
+				log.Panicf("%s not found", key)
+			}
+			n, err := strconv.ParseInt(string(val), 10, 64)
+			if err != nil {
+				log.Panic(err)
+			}
+			n2 := int(n) + delta
+			err = o.Set([]byte(fmt.Sprintf("%d", n2)))
+			if err != nil {
+				log.Panic(err)
+			}
+			// fmt.Printf("%d: %d -> %d\n", id, n, n2)
+		}
+
+		// start all the workers
+		wg := sync.WaitGroup{}
+		for i := 0; i < total; i++ {
+			i := i
+			wg.Add(1)
+			d := 1
+			if i%2 == 0 {
+				d = -1
+			}
+			go func() {
+				worker(s, i, d)
+				wg.Done()
+			}()
+		}
+		wg.Wait()
+
+		// verify the final value sums to 0
+		keys, done, err = s.Lock(key)
+		if err != nil {
+			log.Panic(err)
+		}
+		defer done()
+		o := keys[key]
+		val, find, err := o.Get()
+		if err != nil {
+			log.Panic(err)
+		}
+		if find == s3kv.NotFound {
+			log.Panicf("%s not found", key)
+		}
+		Expect(val).To(Equal([]byte("0")))
+
+		fmt.Printf(
+			"%0.1f ms per change (%d changes in %0.2f sec)\n",
+			float64(time.Since(start).Milliseconds())/float64(total),
+			total,
+			time.Since(start).Seconds(),
+		)
 	})
 })
