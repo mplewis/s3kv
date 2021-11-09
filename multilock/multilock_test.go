@@ -20,42 +20,42 @@ const key = "somekey"
 
 var _ = Describe("Multilock", func() {
 	It("works as intended", func() {
-		l := multilock.New()
+		l := multilock.New(t50ms)
 
-		r := l.Acquire(t50ms, key)
+		r := l.Acquire(key)
 		Expect(r).To(BeTrue())
 
-		r = l.Acquire(t50ms, key)
+		r = l.Acquire(key)
 		Expect(r).To(BeFalse())
-		l.Release(t50ms, key)
+		l.Release(key)
 
-		r = l.Acquire(t50ms, key)
+		r = l.Acquire(key)
 		Expect(r).To(BeTrue())
-		l.Release(t50ms, key)
+		l.Release(key)
 
-		r = l.Acquire(t50ms, key)
+		r = l.Acquire(key)
 		Expect(r).To(BeTrue())
 
 		go func() {
 			time.Sleep(25 * time.Millisecond)
-			l.Release(t50ms, key)
+			l.Release(key)
 		}()
 
-		r = l.Acquire(t50ms, key)
+		r = l.Acquire(key)
 		Expect(r).To(BeTrue())
-		l.Release(t50ms, key)
+		l.Release(key)
 	})
 
 	It("runs the lock stress test", func() {
-		l := multilock.New()
+		l := multilock.New(t50ms)
 		success := true
 
 		wg := sync.WaitGroup{}
 		for i := 0; i < 1000; i++ {
 			wg.Add(1)
 			go func() {
-				r := l.Acquire(t50ms, "somekey")
-				l.Release(t50ms, "somekey")
+				r := l.Acquire("somekey")
+				l.Release("somekey")
 				if !r {
 					success = false
 				}
