@@ -25,41 +25,41 @@ var _ = Describe("store", func() {
 		o2 := kvs["bar"]
 
 		// get not found
-		_, find, err := o.Get()
+		_, found, err := o.Get()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(find).To(Equal(s3kv.NotFound))
+		Expect(found).To(Equal(false))
 
 		// set, then get found
 		err = o.Set([]byte("baz"))
 		Expect(err).NotTo(HaveOccurred())
 
-		data, find, err := o.Get()
+		data, found, err := o.Get()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(find).To(Equal(s3kv.Found))
+		Expect(found).To(Equal(true))
 		Expect(data).To(Equal([]byte("baz")))
 
 		// set, then get found for a different key
 		err = o2.Set([]byte("qux"))
 		Expect(err).NotTo(HaveOccurred())
 
-		data, find, err = o2.Get()
+		data, found, err = o2.Get()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(find).To(Equal(s3kv.Found))
+		Expect(found).To(Equal(true))
 		Expect(data).To(Equal([]byte("qux")))
 
 		// the original key still holds its value
-		data, find, err = o.Get()
+		data, found, err = o.Get()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(find).To(Equal(s3kv.Found))
+		Expect(found).To(Equal(true))
 		Expect(data).To(Equal([]byte("baz")))
 
 		// delete, then get not found
 		err = o.Del()
 		Expect(err).NotTo(HaveOccurred())
 
-		_, find, err = o.Get()
+		_, found, err = o.Get()
 		Expect(err).NotTo(HaveOccurred())
-		Expect(find).To(Equal(s3kv.NotFound))
+		Expect(found).To(Equal(false))
 	})
 
 	It("passes the atomic stress test", func() {
@@ -92,7 +92,7 @@ var _ = Describe("store", func() {
 			if err != nil {
 				log.Panic(err)
 			}
-			if find == s3kv.NotFound {
+			if find == false {
 				log.Panicf("%s not found", key)
 			}
 			n, err := strconv.ParseInt(string(val), 10, 64)
@@ -134,7 +134,7 @@ var _ = Describe("store", func() {
 		if err != nil {
 			log.Panic(err)
 		}
-		if find == s3kv.NotFound {
+		if find == false {
 			log.Panicf("%s not found", key)
 		}
 		Expect(val).To(Equal([]byte("0")))

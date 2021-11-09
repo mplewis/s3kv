@@ -9,22 +9,14 @@ import (
 	"github.com/aws/aws-sdk-go/service/s3"
 )
 
-// FindResult represents whether a value was found for a given key or not.
-type FindResult bool
-
-const (
-	Found    FindResult = true
-	NotFound FindResult = false
-)
-
 // Object represents an S3 object in the store.
 type Object interface {
 	// Key returns the object's key.
 	Key() string
 	// Get returns the object's value, whether the value exists, and any error that occurred.
-	Get() ([]byte, FindResult, error)
+	Get() (data []byte, found bool, err error)
 	// Set sets the value for a given key.
-	Set([]byte) error
+	Set(data []byte) error
 	// Del deletes a key from the store.
 	Del() error
 }
@@ -48,22 +40,22 @@ func (o object) Key() string {
 }
 
 // Get returns the object's value, whether the value exists, and any error that occurred.
-func (o object) Get() ([]byte, FindResult, error) {
+func (o object) Get() (data []byte, found bool, err error) {
 	if o.stale {
-		return nil, Found, o.staleErr()
+		return nil, true, o.staleErr()
 	}
 	resp, err := o.client.GetObject(&s3.GetObjectInput{Bucket: &o.bucket, Key: &o.key})
 	if notFound(err) {
-		return nil, NotFound, nil
+		return nil, false, nil
 	}
 	if err != nil {
-		return nil, Found, err
+		return nil, true, err
 	}
-	data, err := ioutil.ReadAll(resp.Body)
+	data, err = ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return nil, Found, err
+		return nil, true, err
 	}
-	return data, Found, nil
+	return data, true, nil
 }
 
 // Set sets the value for a given key.
