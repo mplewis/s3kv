@@ -5,20 +5,21 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go/aws/session"
+	awsSession "github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/google/uuid"
 	"github.com/mplewis/s3kv/multilock"
+	golock "github.com/viney-shih/go-lock"
 )
 
-// Store is a key-value store backed by an S3 bucket.
-type Store interface {
-	Lock(keys ...Key) (map[Key]Object, Done, error)
-}
+type SessionID string
 
-// store is the implementation of Store.
-type store struct {
-	s3     *s3.S3
-	bucket string
-	locks  *multilock.MultiLock
+type S3KV struct {
+	client   *s3.S3
+	bucket   string
+	metalock *golock.CASMutex
+	locks    *multilock.MultiLock
+	sessions map[SessionID]*Session
 }
 
 // Args is the set of arguments used to configure a new Store.
@@ -50,50 +51,81 @@ type Args struct {
 	Timeout time.Duration
 }
 
-// New creates a new key-value store backed by an S3 bucket.
-func New(args Args) Store {
+func New(args Args) *S3KV {
 	if args.Session == nil {
-		args.Session = session.Must(session.NewSession())
+		args.Session = awsSession.Must(awsSession.NewSession())
 	}
 	if args.Timeout == time.Duration(0) {
 		args.Timeout = defaultTimeout
 	}
-	svc := s3.New(args.Session)
-	return store{svc, args.Bucket, multilock.New(args.Timeout)}
+	return &S3KV{
+		client:   s3.New(args.Session),
+		bucket:   args.Bucket,
+		metalock: golock.NewCASMutex(),
+		locks:    multilock.New(args.Timeout),
+		sessions: make(map[SessionID]*Session),
+	}
 }
 
-// Lock locks the specified keys to guarantee exclusive access to each.
-func (s store) Lock(keys ...Key) (map[Key]Object, Done, error) {
-	m := map[Key]Object{}
-
-	acquired := []string{}
-	objs := []*object{}
-
-	done := func() {
-		for _, obj := range objs {
-			obj.stale = true
-		}
-		for _, key := range acquired {
-			// this action MUST succeed, or the locks will be left in an inconsistent state
-			for {
-				if s.locks.Release(key) {
-					break
-				}
-			}
+func unravel(s *S3KV, sess *Session) {
+	for key := range sess.objs {
+		// every unlock must succeed
+		success := false
+		for !success {
+			success = s.locks.Release(key)
 		}
 	}
+}
 
+func (s *S3KV) OpenSession(keys ...string) (SessionID, *Session, error) {
+	sess := Session{objs: map[string]Object{}}
 	for _, key := range keys {
 		ok := s.locks.Acquire(key)
 		if !ok {
-			done() // unwind the wip locks
-			return nil, nil, fmt.Errorf("could not acquire cache lock for key %s", key)
+			unravel(s, &sess)
+			return "", nil, fmt.Errorf("failed to acquire lock for key %s", key)
 		}
-		acquired = append(acquired, key)
-		o := object{stale: false, client: s.s3, bucket: s.bucket, key: key}
-		objs = append(objs, &o)
-		m[key] = o
+		sess.objs[key] = object{client: s.client, bucket: s.bucket, key: key}
 	}
 
-	return m, done, nil
+	id := SessionID(uuid.New().String())
+	s.sessions[id] = &sess
+	return id, &sess, nil
+}
+
+func (s *S3KV) CloseSession(id SessionID) error {
+	sess, ok := s.sessions[id]
+	if !ok {
+		return fmt.Errorf("session not found: %s", id)
+	}
+	unravel(s, sess)
+	delete(s.sessions, id)
+	return nil
+}
+
+func (s *S3KV) List(prefix string) ([]string, error) {
+	keys := []string{}
+	err := s.client.ListObjectsV2Pages(&s3.ListObjectsV2Input{
+		Bucket: &s.bucket,
+		Prefix: &prefix,
+	}, func(page *s3.ListObjectsV2Output, lastPage bool) bool {
+		for _, obj := range page.Contents {
+			keys = append(keys, *obj.Key)
+		}
+		return true
+	})
+	return keys, err
+}
+
+func (s *S3KV) Get(key string) (data []byte, found bool, err error) {
+	return object{client: s.client, bucket: s.bucket, key: key}.Get()
+}
+
+type Session struct {
+	objs map[string]Object
+}
+
+func (s *Session) Get(key string) (Object, bool) {
+	a, b := s.objs[key]
+	return a, b
 }

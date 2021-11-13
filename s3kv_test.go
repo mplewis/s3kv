@@ -3,11 +3,9 @@ package s3kv_test
 import (
 	"os"
 	"testing"
-	"time"
 
 	"log"
 
-	"github.com/mplewis/s3kv"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 
@@ -24,15 +22,14 @@ func TestS3kv(t *testing.T) {
 
 const bucket = "mplewis-s3kv-test"
 
-var s s3kv.Store
 var client *s3.S3
-var sess *session.Session
+var s3Session *session.Session
 
 func init() {
 	if os.Getenv("TEST_WITH_LIVE_S3") != "" {
-		sess = session.Must(session.NewSession())
+		s3Session = session.Must(session.NewSession())
 	} else {
-		sess = session.Must(session.NewSessionWithOptions(session.Options{
+		s3Session = session.Must(session.NewSessionWithOptions(session.Options{
 			Profile: "localhost",
 			Config: aws.Config{
 				Region:                        aws.String("us-east-1"),
@@ -43,8 +40,7 @@ func init() {
 			},
 		}))
 	}
-	s = s3kv.New(s3kv.Args{Bucket: bucket, Session: sess, Timeout: 60 * time.Second})
-	client = s3.New(sess)
+	client = s3.New(s3Session)
 }
 
 func emptyBucket() {
