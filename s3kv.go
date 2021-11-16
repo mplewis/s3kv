@@ -48,7 +48,5 @@ const defaultTimeout = 15 * time.Second
 // Key is the key for a key-value pair in the store.
 type Key = string
 
-// Done is the finalizer for a store.Lock() operation.
-// It must be called when the client is done working with the locked data to release it for other clients.
-// The easiest way to do this is to call `defer done()` immediately after checking for errors.
-type Done = func()
+// SessionID is the ID for an open session. Use this to close the session.
+type SessionID string

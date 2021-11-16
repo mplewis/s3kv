@@ -1,131 +1,181 @@
 package s3kv
 
 import (
+	"bytes"
+	"context"
+	"errors"
 	"fmt"
+	"io/ioutil"
 	"time"
 
-	"github.com/aws/aws-sdk-go/aws/session"
-	awsSession "github.com/aws/aws-sdk-go/aws/session"
-	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/google/uuid"
 	"github.com/mplewis/s3kv/multilock"
-	golock "github.com/viney-shih/go-lock"
 )
 
-type SessionID string
+// list store keys with prefix
+// get value for key
+// open session, locking keys
+// with session, set value for key
+// close session
 
-type S3KV struct {
-	client   *s3.S3
-	bucket   string
-	metalock *golock.CASMutex
-	locks    *multilock.MultiLock
-	sessions map[SessionID]*Session
+type Store struct {
+	client    *s3.Client
+	bucket    string
+	namespace string
+	sessions  map[SessionID][]Key
+	context   context.Context
+	locks     *multilock.MultiLock
 }
 
-// Args is the set of arguments used to configure a new Store.
-//
-// Bucket (mandatory) names the S3 bucket to use as a key-value store.
-//
-// Session (optional) is an AWS session to use for the S3 client. If not specified, a default session will be created.
-//
-// Example usage of the custom session to specify an alternate S3 endpoint:
-//
-// 		client := s3.New(session.Must(session.NewSessionWithOptions(options)))
-// 		options := session.Options{
-// 			Profile: "localhost",
-// 			Config: aws.Config{
-// 				Region:                        aws.String("us-east-1"),
-// 				Endpoint:                      aws.String("http://my-custom-s3-domain:9999"),
-// 				Credentials:                   credentials.NewStaticCredentials("<access-key>", "<secret-key>", ""),
-// 				CredentialsChainVerboseErrors: aws.Bool(true),
-// 				S3ForcePathStyle:              aws.Bool(true),
-// 			},
-// 		}
-// 		sess := session.Must(session.NewSessionWithOptions(options))}
-//		store := s3kv.New(s3kv.Args{Bucket: bucket, Session: sess})
-//
-// Timeout (optional) is the lock timeout used when acquiring locks. Defaults to 15 seconds.
+// Args are the arguments for a new store.
 type Args struct {
-	Bucket  string
-	Session *session.Session
-	Timeout time.Duration
+	Bucket    string          // Required. The name of the S3 bucket to use.
+	Namespace string          // Required. A prefix to use for all keys in this store.
+	Timeout   time.Duration   // Optional. The timeout for acquisition of all locks.
+	Context   context.Context // Optional. The context to use for all operations. Defaults to context.Background().
+	Client    *s3.Client      // Optional. The client to use for all operations. Defaults to s3.NewFromConfig(config.NewConfig()).
 }
 
-func New(args Args) *S3KV {
-	if args.Session == nil {
-		args.Session = awsSession.Must(awsSession.NewSession())
+// New builds a new Store.
+func New(args Args) (*Store, error) {
+	if args.Bucket == "" {
+		return nil, errors.New("bucket must be provided")
 	}
-	if args.Timeout == time.Duration(0) {
+	if args.Namespace == "" {
+		return nil, errors.New("namespace must be provided")
+	}
+	if args.Timeout == 0 {
 		args.Timeout = defaultTimeout
 	}
-	return &S3KV{
-		client:   s3.New(args.Session),
-		bucket:   args.Bucket,
-		metalock: golock.NewCASMutex(),
-		locks:    multilock.New(args.Timeout),
-		sessions: make(map[SessionID]*Session),
+	if args.Context == nil {
+		args.Context = context.Background()
 	}
+	if args.Client == nil {
+		cfg, err := config.LoadDefaultConfig(args.Context)
+		if err != nil {
+			return nil, err
+		}
+		args.Client = s3.NewFromConfig(cfg)
+	}
+
+	store := &Store{
+		client:    args.Client,
+		bucket:    args.Bucket,
+		namespace: args.Namespace,
+		sessions:  map[SessionID][]Key{},
+		context:   args.Context,
+		locks:     multilock.New(args.Timeout),
+	}
+	return store, nil
 }
 
-func unravel(s *S3KV, sess *Session) {
-	for key := range sess.objs {
-		// every unlock must succeed
-		success := false
-		for !success {
-			success = s.locks.Release(key)
+// List lists all keys in the store with the given prefix. This is likely a very slow operation, so use with caution.
+func (s *Store) List(prefix string) ([]Key, error) {
+	var keys []Key
+	paginator := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{Bucket: &s.bucket, Prefix: &prefix})
+	for paginator.HasMorePages() {
+		output, err := paginator.NextPage(context.TODO())
+		if err != nil {
+			return nil, err
+		}
+		for _, c := range output.Contents {
+			keys = append(keys, Key(*c.Key))
 		}
 	}
+	return keys, nil
 }
 
-func (s *S3KV) OpenSession(keys ...string) (SessionID, *Session, error) {
-	sess := Session{objs: map[string]Object{}}
-	for _, key := range keys {
-		ok := s.locks.Acquire(key)
-		if !ok {
-			unravel(s, &sess)
-			return "", nil, fmt.Errorf("failed to acquire lock for key %s", key)
-		}
-		sess.objs[key] = object{client: s.client, bucket: s.bucket, key: key}
-	}
-
-	id := SessionID(uuid.New().String())
-	s.sessions[id] = &sess
-	return id, &sess, nil
-}
-
-func (s *S3KV) CloseSession(id SessionID) error {
-	sess, ok := s.sessions[id]
-	if !ok {
-		return fmt.Errorf("session not found: %s", id)
-	}
-	unravel(s, sess)
-	delete(s.sessions, id)
-	return nil
-}
-
-func (s *S3KV) List(prefix string) ([]string, error) {
-	keys := []string{}
-	err := s.client.ListObjectsV2Pages(&s3.ListObjectsV2Input{
-		Bucket: &s.bucket,
-		Prefix: &prefix,
-	}, func(page *s3.ListObjectsV2Output, lastPage bool) bool {
-		for _, obj := range page.Contents {
-			keys = append(keys, *obj.Key)
-		}
-		return true
+// Get returns the value for the given key.
+func (s *Store) Get(key string) ([]byte, error) {
+	r, err := s.client.GetObject(s.context, &s3.GetObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(s.ns(key)),
 	})
-	return keys, err
+	if err != nil {
+		return nil, err
+	}
+	return ioutil.ReadAll(r.Body)
 }
 
-func (s *S3KV) Get(key string) (data []byte, found bool, err error) {
-	return object{client: s.client, bucket: s.bucket, key: key}.Get()
+// Set sets the value for the given key. You must have an open session for the key.
+func (s *Store) Set(sid SessionID, key string, value []byte) error {
+	if err := s.keyInSess(sid, key); err != nil {
+		return err
+	}
+	_, err := s.client.PutObject(s.context, &s3.PutObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(s.ns(key)),
+		Body:   bytes.NewReader(value),
+	})
+	return err
 }
 
-type Session struct {
-	objs map[string]Object
+// Del deletes the key-value pair for the given key.
+func (s *Store) Del(sid SessionID, key string, value []byte) error {
+	if err := s.keyInSess(sid, key); err != nil {
+		return err
+	}
+	_, err := s.client.DeleteObject(s.context, &s3.DeleteObjectInput{
+		Bucket: aws.String(s.bucket),
+		Key:    aws.String(s.ns(key)),
+	})
+	return err
 }
 
-func (s *Session) Get(key string) (Object, bool) {
-	a, b := s.objs[key]
-	return a, b
+// OpenSession acquires the given keys for exclusive writing.
+// TODO: auto-unlock at timeout
+func (s *Store) OpenSession(keys ...string) (SessionID, error) {
+	acquired := []Key{}
+	for _, key := range keys {
+		if !s.locks.Acquire(string(key)) {
+			s.unravel(acquired)
+			return "", fmt.Errorf("could not acquire lock for key: %s", key)
+		}
+		acquired = append(acquired, Key(key))
+	}
+	sid := SessionID(uuid.New().String())
+	s.sessions[sid] = acquired
+	return sid, nil
+}
+
+// CloseSession releases the exclusive write lock on the keys in the session.
+func (s *Store) CloseSession(sid SessionID) {
+	s.unravel(s.sessions[sid])
+	delete(s.sessions, sid)
+}
+
+// ns appends the namespace prefix to the given key.
+func (s *Store) ns(key string) string {
+	return fmt.Sprintf("%s/%s", s.namespace, key)
+}
+
+// unravel ensures all the given keys are unlocked.
+func (s *Store) unravel(keys []Key) {
+	for _, key := range keys {
+		for !s.locks.Release(string(key)) {
+			// this must succeed
+		}
+	}
+}
+
+// keyInSess returns true if the session exists and includes the given key.
+func (s *Store) keyInSess(sid SessionID, key string) error {
+	keys, ok := s.sessions[sid]
+	if !ok {
+		return fmt.Errorf("session not found: %s", sid)
+	}
+	in := false
+	for _, k := range keys {
+		if k == key {
+			in = true
+			break
+		}
+	}
+	if !in {
+		return fmt.Errorf("session %s does not have key %s", sid, key)
+	}
+	return nil
 }
