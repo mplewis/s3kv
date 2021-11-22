@@ -127,7 +127,7 @@ func (s *Store) keyInSess(sid SessionID, key string) error {
 		}
 	}
 	if !in {
-		return fmt.Errorf("session %s does not have key %s", sid, key)
+		return fmt.Errorf("session %s does not have key: %s", sid, key)
 	}
 	return nil
 }

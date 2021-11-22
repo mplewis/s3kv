@@ -15,8 +15,8 @@ func TestS3kv(t *testing.T) {
 	RunSpecs(t, "S3kv Suite")
 }
 
-var short = 50 * time.Millisecond
-var long = 500 * time.Millisecond
+var short = 10 * time.Millisecond
+var long = 100 * time.Millisecond
 
 // const bucket = "mplewis-s3kv-test"
 // const ns = "test-ns"
