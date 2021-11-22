@@ -42,8 +42,11 @@ package s3kv
 
 import "time"
 
-// defaultTimeout is the lock timeout used if none is specified in New().
-const defaultTimeout = 15 * time.Second
+// defaultLockTimeout is the lock timeout used if none is specified in New().
+const defaultLockTimeout = 15 * time.Second
+
+// defaultSessionTimeout is the session timeout used if none is specified in New().
+const defaultSessionTimeout = 15 * time.Second
 
 // Key is the key for a key-value pair in the store.
 type Key = string

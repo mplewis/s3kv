@@ -37,18 +37,46 @@ func (m *MultiLock) Acquire(key string) bool {
 	return ok
 }
 
+// MustAcquire acquires the lock for the given key, waiting until it is available.
+func (m *MultiLock) MustAcquire(key string) {
+	m.l.Lock()
+	keyLock, ok := m.locks[key]
+	if !ok {
+		keyLock = golock.NewCASMutex()
+		m.locks[key] = keyLock
+	}
+	m.l.Unlock()
+	keyLock.Lock()
+}
+
 // Release releases the lock for the given key, returning True on success and False on timeout.
 func (m *MultiLock) Release(key string) bool {
 	ok := m.l.TryLockWithTimeout(m.timeout)
 	if !ok {
 		return false
 	}
-	defer m.l.Unlock()
 
 	keyLock, ok := m.locks[key]
 	if !ok {
+		m.l.Unlock()
 		return true
 	}
+
+	m.l.Unlock()
 	keyLock.Unlock()
 	return true
+}
+
+// MustRelease releases the lock for the given key, waiting until it is available.
+func (m *MultiLock) MustRelease(key string) {
+	m.l.Lock()
+
+	keyLock, ok := m.locks[key]
+	if !ok {
+		m.l.Unlock()
+		return
+	}
+
+	m.l.Unlock()
+	keyLock.Unlock()
 }
