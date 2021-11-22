@@ -23,8 +23,8 @@ type Backing interface {
 	Del(key Key) error
 }
 
-// s3Backing stores data in AWS S3.
-type s3Backing struct {
+// S3Backing stores data in AWS S3.
+type S3Backing struct {
 	bucket    string
 	namespace string
 	client    *s3.Client
@@ -51,7 +51,7 @@ func NewS3Backing(args S3BackingArgs) (Backing, error) {
 		}
 		args.Client = s3.NewFromConfig(cfg)
 	}
-	return &s3Backing{
+	return &S3Backing{
 		client:    args.Client,
 		context:   args.Context,
 		bucket:    args.Bucket,
@@ -60,12 +60,12 @@ func NewS3Backing(args S3BackingArgs) (Backing, error) {
 }
 
 // ns appends the namespace prefix to the given key.
-func (s *s3Backing) ns(key Key) Key {
+func (s *S3Backing) ns(key Key) Key {
 	return fmt.Sprintf("%s/%s", s.namespace, key)
 }
 
 // List lists all keys in the store with the given prefix. This is likely a very slow operation, so use with caution.
-func (s *s3Backing) List(prefix string) ([]Key, error) {
+func (s *S3Backing) List(prefix string) ([]Key, error) {
 	var keys []Key
 	paginator := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{Bucket: &s.bucket, Prefix: &prefix})
 	for paginator.HasMorePages() {
@@ -81,7 +81,7 @@ func (s *s3Backing) List(prefix string) ([]Key, error) {
 }
 
 // Get returns the value for the given key.
-func (s *s3Backing) Get(key Key) ([]byte, error) {
+func (s *S3Backing) Get(key Key) ([]byte, error) {
 	r, err := s.client.GetObject(s.context, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(s.ns(key)),
@@ -93,7 +93,7 @@ func (s *s3Backing) Get(key Key) ([]byte, error) {
 }
 
 // Set sets the value for the given key.
-func (s *s3Backing) Set(key Key, value []byte) error {
+func (s *S3Backing) Set(key Key, value []byte) error {
 	_, err := s.client.PutObject(s.context, &s3.PutObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(s.ns(key)),
@@ -103,7 +103,7 @@ func (s *s3Backing) Set(key Key, value []byte) error {
 }
 
 // Del deletes the key-value pair for the given key.
-func (s *s3Backing) Del(key Key) error {
+func (s *S3Backing) Del(key Key) error {
 	_, err := s.client.DeleteObject(s.context, &s3.DeleteObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(s.ns(key)),
