@@ -1,10 +1,17 @@
 package s3kv_test
 
 import (
+	"context"
+	"log"
+	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/mplewis/s3kv"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -15,63 +22,73 @@ func TestS3kv(t *testing.T) {
 	RunSpecs(t, "S3kv Suite")
 }
 
-var short = 10 * time.Millisecond
-var long = 100 * time.Millisecond
+var short = 50 * time.Millisecond
+var long = 10 * short
 
-// const bucket = "mplewis-s3kv-test"
-// const ns = "test-ns"
+const bucket = "mplewis-s3kv-test"
+const ns = "test-ns"
 
-// var ctx = context.Background()
-// var s3b s3kv.S3Backing
+var ctx = context.Background()
+var client *s3.Client
+var s3b s3kv.Backing
 
 func init() {
-	// var err error
-	// var cfg aws.Config
-	// if os.Getenv("TEST_WITH_LIVE_S3") != "" {
-	// 	cfg, err = config.LoadDefaultConfig(ctx)
-	// 	if err != nil {
-	// 		log.Panic(err)
-	// 	}
-	// } else {
-	// 	// TODO: Implement custom endpoint
-	// 	cfg = aws.Config{
-	// 		Region:                        "us-east-1",
-	// 		Endpoint:                      "http://localhost:9999",
-	// 		CredentialsChainVerboseErrors: aws.Bool(true),
-	// 		Credentials:                   credentials.NewStaticCredentials("access-key", "secret-key", ""),
-	// 		S3ForcePathStyle:              aws.Bool(true),
-	// 	}
-	// }
-	// client := s3.NewFromConfig(cfg)
-	// s3b = s3kv.NewS3Backing(s3kv.S3BackingArgs{
-	// 	Bucket:    bucket,
-	// 	Namespace: ns,
-	// 	Client:    client,
-	// 	Config:    cfg,
-	// })
+	var err error
+	var cfg aws.Config
+
+	if os.Getenv("TEST_WITH_LIVE_S3") != "" {
+		cfg, err = config.LoadDefaultConfig(ctx)
+		if err != nil {
+			log.Panic(err)
+		}
+	} else {
+		resolver := aws.EndpointResolverFunc(func(service, region string) (aws.Endpoint, error) {
+			return aws.Endpoint{URL: "http://localhost:9999"}, nil
+		})
+		cfg, err = config.LoadDefaultConfig(
+			ctx,
+			config.WithEndpointResolver(resolver),
+		)
+		if err != nil {
+			log.Panic(err)
+		}
+	}
+
+	client = s3.NewFromConfig(cfg, func(o *s3.Options) {
+		o.UsePathStyle = true
+	})
+
+	s3b, err = s3kv.NewS3Backing(s3kv.S3BackingArgs{
+		Bucket:    bucket,
+		Namespace: ns,
+		Client:    client,
+	})
+	if err != nil {
+		log.Panic(err)
+	}
 }
 
-// func emptyBucket() {
-// 	resp, err := client.ListObjectsV2(&s3.ListObjectsV2Input{Bucket: aws.String(bucket)})
-// 	if err != nil {
-// 		log.Panic(err)
-// 	}
-// 	if len(resp.Contents) == 0 {
-// 		return
-// 	}
+func emptyBucket() {
+	resp, err := client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{Bucket: aws.String(bucket)})
+	if err != nil {
+		log.Panic(err)
+	}
+	if len(resp.Contents) == 0 {
+		return
+	}
 
-// 	objects := []*s3.ObjectIdentifier{}
-// 	for _, obj := range resp.Contents {
-// 		objects = append(objects, &s3.ObjectIdentifier{Key: obj.Key})
-// 	}
-// 	_, err = client.DeleteObjects(&s3.DeleteObjectsInput{
-// 		Bucket: aws.String(bucket),
-// 		Delete: &s3.Delete{Objects: objects},
-// 	})
-// 	if err != nil {
-// 		log.Panic(err)
-// 	}
-// }
+	objects := []types.ObjectIdentifier{}
+	for _, obj := range resp.Contents {
+		objects = append(objects, types.ObjectIdentifier{Key: obj.Key})
+	}
+	_, err = client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
+		Bucket: aws.String(bucket),
+		Delete: &types.Delete{Objects: objects},
+	})
+	if err != nil {
+		log.Panic(err)
+	}
+}
 
 var mb = MemoryBacking{map[string][]byte{}}
 
