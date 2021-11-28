@@ -2,10 +2,13 @@ package s3kv
 
 import (
 	"fmt"
+	"log"
 	"time"
 
+	"github.com/go-redis/redis/v8"
 	"github.com/google/uuid"
-	"github.com/mplewis/s3kv/multilock"
+	"github.com/thoas/go-funk"
+	"gopkg.in/redsync.v1"
 )
 
 // list store keys with prefix
@@ -14,12 +17,13 @@ import (
 // with session, set value for key
 // close session
 
+const GLOBAL_NAMESPACE = "s3kv"
+
 type Store struct {
-	backing        Backing
-	sessions       map[SessionID][]Key
-	sessionLocks   *multilock.MultiLock
-	sessionTimeout time.Duration
-	timeoutLocks   *multilock.MultiLock
+	namespace string
+	backing   Backing
+	redis     redis.Client
+	locks     redsync.Redsync
 }
 
 // Args are the arguments for a new store.
@@ -39,11 +43,8 @@ func New(args Args) (*Store, error) {
 	}
 
 	store := &Store{
-		backing:        args.Backing,
-		sessions:       map[SessionID][]Key{},
-		sessionLocks:   multilock.New(args.LockTimeout),
-		sessionTimeout: args.SessionTimeout,
-		timeoutLocks:   multilock.New(args.LockTimeout),
+		backing:  args.Backing,
+		sessions: map[SessionID][]Key{},
 	}
 	return store, nil
 }
@@ -60,74 +61,87 @@ func (s *Store) Get(key string) ([]byte, error) {
 
 // Set sets the value for the given key. You must have an open session for the key.
 func (s *Store) Set(sid SessionID, key string, value []byte) error {
-	if err := s.keyInSess(sid, key); err != nil {
-		return err
+	if !s.sessionHas(sid, key) {
+		return fmt.Errorf("session %s does not include key %s", sid, key)
 	}
 	return s.backing.Set(key, value)
 }
 
 // Del deletes the key-value pair for the given key.
-func (s *Store) Del(sid SessionID, key string, value []byte) error {
-	if err := s.keyInSess(sid, key); err != nil {
-		return err
+func (s *Store) Del(sid SessionID, key string) error {
+	if !s.sessionHas(sid, key) {
+		return fmt.Errorf("session %s does not include key %s", sid, key)
 	}
 	return s.backing.Del(key)
 }
 
-// OpenSession acquires the given keys for exclusive writing.
-func (s *Store) OpenSession(keys ...string) (SessionID, error) {
-	acquired := []Key{}
+// Lock acquires the given keys for exclusive writing and returns a new session ID, or an error if the keys could not be locked.
+func (s *Store) Lock(keys ...string) (SessionID, error) {
+	sid := s.sessKey()
+	sess := []Key{}
 	for _, key := range keys {
-		if !s.sessionLocks.Acquire(string(key)) {
-			s.unravel(acquired)
-			return "", fmt.Errorf("could not acquire lock for key: %s", key)
+		if err := s.lockKey(key); err != nil {
+			for _, key := range sess {
+				_ = s.unlockKey(key) // ignore errors
+			}
+			return "", err
 		}
-		acquired = append(acquired, Key(key))
+		sess = append(sess, key)
 	}
-	sid := SessionID(uuid.New().String())
-	s.sessions[sid] = acquired
-
-	go func() {
-		<-time.After(s.sessionTimeout)
-		s.CloseSession(sid)
-	}()
-
 	return sid, nil
 }
 
-// CloseSession releases the exclusive write lock on the keys in the session.
-func (s *Store) CloseSession(sid SessionID) {
-	s.timeoutLocks.MustAcquire(string(sid))
-	keys, ok := s.sessions[sid]
-	if ok {
-		s.unravel(keys)
-		delete(s.sessions, sid)
+// Unlock releases the exclusive write lock on the keys in the session.
+func (s *Store) Unlock(sid SessionID) error {
+	sess, err := s.getSession(sid)
+	if err != nil {
+		return err
 	}
-	s.timeoutLocks.MustRelease(string(sid))
-}
-
-// unravel ensures all the given keys are unlocked.
-func (s *Store) unravel(keys []Key) {
-	for _, key := range keys {
-		s.sessionLocks.MustRelease(string(key))
-	}
-}
-
-// keyInSess returns true if the session exists and includes the given key.
-func (s *Store) keyInSess(sid SessionID, key string) error {
-	keys, ok := s.sessions[sid]
-	if !ok {
-		return fmt.Errorf("session not found: %s", sid)
-	}
-	in := false
-	for _, k := range keys {
-		if k == key {
-			in = true
-			break
+	errs := []error{}
+	for _, key := range sess {
+		if err := s.unlockKey(key); err != nil {
+			errs = append(errs, err)
 		}
 	}
-	if !in {
-		return fmt.Errorf("session %s does not have key: %s", sid, key)
+	if len(errs) > 0 {
+		return fmt.Errorf("errors while unlocking session: %v", errs)
 	}
+	return nil
+}
+
+func (s *Store) nsKey(key Key) string {
+	return fmt.Sprintf("%s:%s:%s", GLOBAL_NAMESPACE, s.namespace, key)
+}
+
+func (s *Store) sessKey() SessionID {
+	return SessionID(s.nsKey("sess_" + uuid.New().String()))
+}
+
+func (s *Store) lockKey(key Key) error {
+	// TODO
+	return nil
+}
+
+func (s *Store) unlockKey(key Key) error {
+	// TODO
+	return nil
+}
+
+func (s *Store) sessionHas(sid SessionID, key Key) bool {
+	sess, err := s.getSession(sid)
+	if err != nil {
+		log.Printf("WARN: failed to get session %s: %v", sid, err.Error())
+		return false
+	}
+	return funk.Contains(sess, key)
+}
+
+func (s *Store) getSession(sid SessionID) ([]Key, error) {
+	// TODO
+	return []Key{}, nil
+}
+
+func (s *Store) setSession(sid SessionID, keys []Key) error {
+	// TODO
 	return nil
 }
