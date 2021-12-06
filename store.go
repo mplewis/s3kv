@@ -3,6 +3,7 @@ package s3kv
 import (
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -18,12 +19,15 @@ import (
 // close session
 
 const GLOBAL_NAMESPACE = "s3kv"
+const SESS_KEYS_DELIM = "|"
 
 type Store struct {
-	namespace string
-	backing   Backing
-	redis     redis.Client
-	locks     redsync.Redsync
+	namespace      string
+	backing        Backing
+	redis          redis.Client
+	locks          redsync.Redsync
+	lockTimeout    time.Duration
+	sessionTimeout time.Duration
 }
 
 // Args are the arguments for a new store.
@@ -43,8 +47,9 @@ func New(args Args) (*Store, error) {
 	}
 
 	store := &Store{
-		backing:  args.Backing,
-		sessions: map[SessionID][]Key{},
+		backing:        args.Backing,
+		lockTimeout:    args.LockTimeout,
+		sessionTimeout: args.SessionTimeout,
 	}
 	return store, nil
 }
@@ -61,7 +66,11 @@ func (s *Store) Get(key string) ([]byte, error) {
 
 // Set sets the value for the given key. You must have an open session for the key.
 func (s *Store) Set(sid SessionID, key string, value []byte) error {
-	if !s.sessionHas(sid, key) {
+	in, err := s.sessionHas(sid, key)
+	if err != nil {
+		return err
+	}
+	if !in {
 		return fmt.Errorf("session %s does not include key %s", sid, key)
 	}
 	return s.backing.Set(key, value)
@@ -69,25 +78,44 @@ func (s *Store) Set(sid SessionID, key string, value []byte) error {
 
 // Del deletes the key-value pair for the given key.
 func (s *Store) Del(sid SessionID, key string) error {
-	if !s.sessionHas(sid, key) {
+	in, err := s.sessionHas(sid, key)
+	if err != nil {
+		return err
+	}
+	if !in {
 		return fmt.Errorf("session %s does not include key %s", sid, key)
 	}
 	return s.backing.Del(key)
 }
 
-// Lock acquires the given keys for exclusive writing and returns a new session ID, or an error if the keys could not be locked.
+// Lock acquires the given keys for exclusive writing and returns a new session ID,
+// or an error if the keys could not be locked.
 func (s *Store) Lock(keys ...string) (SessionID, error) {
 	sid := s.sessKey()
 	sess := []Key{}
+
+	unravel := func() {
+		for _, key := range sess {
+			if s.unlockKey(key) {
+				log.Printf("WARN: failed to unlock key during unravel: %s\n", key)
+			}
+		}
+	}
+
 	for _, key := range keys {
 		if err := s.lockKey(key); err != nil {
-			for _, key := range sess {
-				_ = s.unlockKey(key) // ignore errors
-			}
+			unravel()
 			return "", err
 		}
 		sess = append(sess, key)
 	}
+
+	err := s.setSession(sid, sess)
+	if err != nil {
+		unravel()
+		return "", err
+	}
+
 	return sid, nil
 }
 
@@ -97,51 +125,76 @@ func (s *Store) Unlock(sid SessionID) error {
 	if err != nil {
 		return err
 	}
+
 	errs := []error{}
 	for _, key := range sess {
-		if err := s.unlockKey(key); err != nil {
+		if !s.unlockKey(key) {
 			errs = append(errs, err)
 		}
 	}
-	if len(errs) > 0 {
-		return fmt.Errorf("errors while unlocking session: %v", errs)
+
+	err = s.delSession(sid)
+	if err != nil {
+		errs = append(errs, err)
 	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("%d errors while unlocking session: %v", len(errs), errs)
+	}
+
 	return nil
 }
 
+// nsKey returns the namespaced Redis key for a key in the store.
 func (s *Store) nsKey(key Key) string {
 	return fmt.Sprintf("%s:%s:%s", GLOBAL_NAMESPACE, s.namespace, key)
 }
 
+// mutex fetches the Redlock mutex for a key in the store.
+func (s *Store) mutex(key Key) *redsync.Mutex {
+	// TODO: Configure this with timeouts
+	return s.locks.NewMutex(s.nsKey(key))
+}
+
+// sessKey returns a new, unique session ID, namespaced for the store.
 func (s *Store) sessKey() SessionID {
 	return SessionID(s.nsKey("sess_" + uuid.New().String()))
 }
 
+// lockKey locks a key.
 func (s *Store) lockKey(key Key) error {
-	// TODO
-	return nil
+	return s.mutex(key).Lock()
 }
 
-func (s *Store) unlockKey(key Key) error {
-	// TODO
-	return nil
+// unlockKey unlocks a key, returning True on success and False on failure.
+func (s *Store) unlockKey(key Key) bool {
+	return s.mutex(key).Unlock()
 }
 
-func (s *Store) sessionHas(sid SessionID, key Key) bool {
+// sessionHas returns True if the session includes the given key.
+func (s *Store) sessionHas(sid SessionID, key Key) (bool, error) {
 	sess, err := s.getSession(sid)
 	if err != nil {
-		log.Printf("WARN: failed to get session %s: %v", sid, err.Error())
-		return false
+		return false, err
 	}
-	return funk.Contains(sess, key)
+	return funk.Contains(sess, key), nil
 }
 
+// getSession returns the keys for the requested session.
 func (s *Store) getSession(sid SessionID) ([]Key, error) {
-	// TODO
-	return []Key{}, nil
+	raw, err := s.redis.Get(s.redis.Context(), string(sid)).Result()
+	if err != nil {
+		return nil, err
+	}
+	return strings.Split(raw, SESS_KEYS_DELIM), nil
 }
 
+// setSession sets the keys for the requested session.
 func (s *Store) setSession(sid SessionID, keys []Key) error {
-	// TODO
-	return nil
+	return s.redis.Set(s.redis.Context(), string(sid), strings.Join(keys, SESS_KEYS_DELIM), s.sessionTimeout).Err()
+}
+
+// delSession deletes the session.
+func (s *Store) delSession(sid SessionID) error {
+	return s.redis.Del(s.redis.Context(), string(sid)).Err()
 }
