@@ -24,11 +24,12 @@ var _ = Describe("store", func() {
 
 		It("works", func() {
 			// We can set then get a value
-			sess, err := s.OpenSession("key1")
+			sess, err := s.Lock("key1")
 			Expect(err).NotTo(HaveOccurred())
 			err = s.Set(sess, "key1", []byte("val1"))
 			Expect(err).NotTo(HaveOccurred())
-			s.CloseSession(sess)
+			err = s.Unlock(sess)
+			Expect(err).NotTo(HaveOccurred())
 
 			val, err := s.Get("key1")
 			Expect(err).NotTo(HaveOccurred())
@@ -44,21 +45,23 @@ var _ = Describe("store", func() {
 			Expect(err.Error()).To(ContainSubstring("session not found"))
 
 			// Setting a value for the wrong session returns an error
-			sess, err = s.OpenSession("key1")
+			sess, err = s.Lock("key1")
 			Expect(err).NotTo(HaveOccurred())
 			err = s.Set(sess, "key2", []byte("val2"))
 			Expect(err.Error()).To(ContainSubstring("does not have key: key2"))
-			s.CloseSession(sess)
+			err = s.Unlock(sess)
+			Expect(err).NotTo(HaveOccurred())
 
 			// We can only lock a value for one session at a time
-			sess, err = s.OpenSession("key1")
+			sess, err = s.Lock("key1")
 			Expect(err).NotTo(HaveOccurred())
-			_, err2 := s.OpenSession("key1")
+			_, err2 := s.Lock("key1")
 			Expect(err2).To(MatchError("could not acquire lock for key: key1"))
-			s.CloseSession(sess)
+			err = s.Unlock(sess)
+			Expect(err).NotTo(HaveOccurred())
 
 			// Sessions auto-close if left open for too long
-			sess, err = s.OpenSession("key1")
+			sess, err = s.Lock("key1")
 			Expect(err).NotTo(HaveOccurred())
 			err = s.Set(sess, "key1", []byte("val1"))
 			Expect(err).NotTo(HaveOccurred())
@@ -69,11 +72,12 @@ var _ = Describe("store", func() {
 
 		It("uses sessions to ensure atomicity of writes", func() {
 			k := "atomicData"
-			sess, err := s.OpenSession(k)
+			sess, err := s.Lock(k)
 			Expect(err).NotTo(HaveOccurred())
 			err = s.Set(sess, k, []byte(""))
 			Expect(err).NotTo(HaveOccurred())
-			s.CloseSession(sess)
+			err = s.Unlock(sess)
+			Expect(err).NotTo(HaveOccurred())
 
 			wg := sync.WaitGroup{}
 			for i := 0; i < 1000; i++ {
@@ -83,7 +87,7 @@ var _ = Describe("store", func() {
 				}
 				wg.Add(1)
 				go func() {
-					sess, err := s.OpenSession(k)
+					sess, err := s.Lock(k)
 					Expect(err).NotTo(HaveOccurred())
 
 					val, err := s.Get(k)
@@ -93,17 +97,19 @@ var _ = Describe("store", func() {
 					err = s.Set(sess, k, val)
 					Expect(err).NotTo(HaveOccurred())
 
-					s.CloseSession(sess)
+					err = s.Unlock(sess)
+					Expect(err).NotTo(HaveOccurred())
 					wg.Done()
 				}()
 			}
 			wg.Wait()
 
-			sess, err = s.OpenSession("unity")
+			sess, err = s.Lock("unity")
 			Expect(err).NotTo(HaveOccurred())
 			val, err := s.Get(k)
 			Expect(err).NotTo(HaveOccurred())
-			s.CloseSession(sess)
+			err = s.Unlock(sess)
+			Expect(err).NotTo(HaveOccurred())
 			x := 0
 			o := 0
 			for _, c := range string(val) {

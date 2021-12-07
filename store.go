@@ -1,22 +1,18 @@
 package s3kv
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"strings"
 	"time"
 
 	"github.com/go-redis/redis/v8"
+	"github.com/go-redsync/redsync/v4/redis/goredis/v8"
 	"github.com/google/uuid"
 	"github.com/thoas/go-funk"
 	"gopkg.in/redsync.v1"
 )
-
-// list store keys with prefix
-// get value for key
-// open session, locking keys
-// with session, set value for key
-// close session
 
 const GLOBAL_NAMESPACE = "s3kv"
 const SESS_KEYS_DELIM = "|"
@@ -25,20 +21,25 @@ type Store struct {
 	namespace      string
 	backing        Backing
 	redis          redis.Client
-	locks          redsync.Redsync
 	lockTimeout    time.Duration
 	sessionTimeout time.Duration
+	locks          redsync.Redsync
 }
 
 // Args are the arguments for a new store.
 type Args struct {
+	Namespace      string        // Required. The namespace for this store's session and lock keys.
 	Backing        Backing       // Required. The backend for this store, where the data lives and is accessed.
+	Redis          redis.Client  // Required. The Redis client to use for session and lock management.
 	LockTimeout    time.Duration // Optional. The timeout for acquisition of all locks.
 	SessionTimeout time.Duration // Optional. The timeout for a session if it is not closed by a client.
 }
 
 // New builds a new Store.
 func New(args Args) (*Store, error) {
+	if args.Namespace == "" {
+		return nil, errors.New("namespace must not be blank")
+	}
 	if args.LockTimeout == 0 {
 		args.LockTimeout = defaultLockTimeout
 	}
@@ -46,12 +47,17 @@ func New(args Args) (*Store, error) {
 		args.SessionTimeout = defaultSessionTimeout
 	}
 
-	store := &Store{
+	// TODO: eventually this needs cluster support
+	pool := goredis.NewPool(args.Redis)
+	rs := redsync.New(pool)
+	return &Store{
+		namespace:      args.Namespace,
 		backing:        args.Backing,
+		redis:          args.Redis,
 		lockTimeout:    args.LockTimeout,
 		sessionTimeout: args.SessionTimeout,
-	}
-	return store, nil
+		locks:          rs,
+	}, nil
 }
 
 // List lists all keys in the store with the given prefix. This is likely a very slow operation, so use with caution.
@@ -88,8 +94,7 @@ func (s *Store) Del(sid SessionID, key string) error {
 	return s.backing.Del(key)
 }
 
-// Lock acquires the given keys for exclusive writing and returns a new session ID,
-// or an error if the keys could not be locked.
+// Lock acquires the given keys for exclusive writing and returns a new session ID.
 func (s *Store) Lock(keys ...string) (SessionID, error) {
 	sid := s.sessKey()
 	sess := []Key{}
@@ -152,8 +157,7 @@ func (s *Store) nsKey(key Key) string {
 
 // mutex fetches the Redlock mutex for a key in the store.
 func (s *Store) mutex(key Key) *redsync.Mutex {
-	// TODO: Configure this with timeouts
-	return s.locks.NewMutex(s.nsKey(key))
+	return s.locks.NewMutex(s.nsKey(key), redsync.SetExpiry(s.lockTimeout))
 }
 
 // sessKey returns a new, unique session ID, namespaced for the store.
