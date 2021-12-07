@@ -45,36 +45,41 @@ var _ = Describe("Sloto", func() {
 	})
 
 	It("passes a stress test", func() {
-		a := sloto.Args{
-			LockAttemptTimeout: 15 * time.Second,
-			SessionTimeout:     30 * time.Second,
-		}
-		s := sloto.New(a)
+		s := sloto.New(sloto.Args{
+			LockAttemptInterval: 100 * time.Millisecond,
+			LockAttemptTimeout:  5 * time.Second,
+			SessionTimeout:      15 * time.Second,
+		})
 
 		// workers must atomically lock each key to end up with the correct values
+		w := ""
 		x := ""
 		y := ""
 		z := ""
 
-		// 100 workers * 3 types = 300 simultaneous workers
 		count := 100
+		kinds := 4
 		wg := sync.WaitGroup{}
 
-		for i := 0; i < count*3; i++ {
+		for i := 0; i < count*kinds; i++ {
 			i := i
 			var names []string
 			var targets []*string
 
-			// each worker wants to append to two of the three values concurrently
-			if i%3 == 0 {
+			// each worker wants to append to two different values concurrently,
+			// but only workers 0 + 2 and workers 1 + 3 are mutually compatible
+			if i%kinds == 0 {
+				names = []string{"w", "x"}
+				targets = []*string{&w, &x}
+			} else if i%kinds == 1 {
 				names = []string{"x", "y"}
 				targets = []*string{&x, &y}
-			} else if i%3 == 1 {
+			} else if i%kinds == 2 {
 				names = []string{"y", "z"}
 				targets = []*string{&y, &z}
 			} else {
-				names = []string{"z", "x"}
-				targets = []*string{&z, &x}
+				names = []string{"z", "w"}
+				targets = []*string{&z, &w}
 			}
 
 			wg.Add(1)
@@ -84,11 +89,11 @@ var _ = Describe("Sloto", func() {
 					log.Panic(err)
 				}
 
-				// the heavy computation of an append takes 10 ms
+				// simulate heavy computation by making an append take 1 ms
 				for _, target := range targets {
 					*target += "x"
 				}
-				<-time.After(10 * time.Millisecond)
+				<-time.After(1 * time.Millisecond)
 
 				s.Unlock(sid)
 				wg.Done()
@@ -97,6 +102,7 @@ var _ = Describe("Sloto", func() {
 
 		wg.Wait()
 
+		Expect(len(w)).To(Equal(count * 2))
 		Expect(len(x)).To(Equal(count * 2))
 		Expect(len(y)).To(Equal(count * 2))
 		Expect(len(z)).To(Equal(count * 2))
