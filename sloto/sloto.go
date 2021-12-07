@@ -11,22 +11,20 @@ import (
 	"github.com/google/uuid"
 )
 
-// JITTER_FRAC is the percentage of jitter to add to a try-lock delay.
-const JITTER_FRAC = 0.1 // 10%
-
 // Key is a unique identifier for a bit of your own data. It is locked by creating a session which contains it.
 type Key = string
 
 // SessionID is a unique identifier for a session, created when a session is created for keys.
 type SessionID string
 
-// Status represents whether a key is locked or unlocked.
-type Status bool
+// jitterFrac is the percentage of jitter to add to a try-lock delay.
+const jitterFrac = 0.1 // 10%
 
-const (
-	LOCKED   Status = true
-	UNLOCKED Status = false
-)
+// locked is an empty struct used for a presence map.
+type locked struct{}
+
+// lock is the present value of locked.
+var lock = locked{}
 
 // Sloto facilitates safe locking of groups of keys in auto-expiring sessions.
 type Sloto struct {
@@ -34,7 +32,7 @@ type Sloto struct {
 	lockTO   time.Duration
 	sessTO   time.Duration
 	access   sync.Mutex
-	keyLocks map[Key]Status
+	keyLocks map[Key]locked
 	sessions map[SessionID][]Key
 }
 
@@ -47,28 +45,28 @@ type Args struct {
 
 // Default values for Args values, if unset.
 const (
-	DEFAULT_LOCK_ATTEMPT_INTERVAL = 100 * time.Millisecond
-	DEFAULT_LOCK_ATTEMPT_TIMEOUT  = 5 * time.Second
-	DEFAULT_SESSION_TIMEOUT       = 15 * time.Second
+	defaultLockAttemptInterval = 100 * time.Millisecond
+	defaultLockAttemptTimeout  = 5 * time.Second
+	defaultSessionTimeout      = 15 * time.Second
 )
 
 // New creates a new Sloto from the given configuration.
 func New(args Args) *Sloto {
 	if args.LockAttemptInterval == 0 {
-		args.LockAttemptInterval = DEFAULT_LOCK_ATTEMPT_INTERVAL
+		args.LockAttemptInterval = defaultLockAttemptInterval
 	}
 	if args.LockAttemptTimeout == 0 {
-		args.LockAttemptTimeout = DEFAULT_LOCK_ATTEMPT_TIMEOUT
+		args.LockAttemptTimeout = defaultLockAttemptTimeout
 	}
 	if args.SessionTimeout == 0 {
-		args.SessionTimeout = DEFAULT_SESSION_TIMEOUT
+		args.SessionTimeout = defaultSessionTimeout
 	}
 	return &Sloto{
 		lattIntv: args.LockAttemptInterval,
 		lockTO:   args.LockAttemptTimeout,
 		sessTO:   args.SessionTimeout,
 		access:   sync.Mutex{},
-		keyLocks: map[Key]Status{},
+		keyLocks: map[Key]locked{},
 		sessions: map[SessionID][]Key{},
 	}
 }
@@ -87,8 +85,8 @@ func (s *Sloto) tryLock(keys ...Key) (sid SessionID, failed *Key) {
 	defer s.access.Unlock()
 
 	for _, key := range keys {
-		val, ok := s.keyLocks[key]
-		if ok && val == LOCKED {
+		_, present := s.keyLocks[key]
+		if present {
 			return "", &key
 		}
 	}
@@ -96,7 +94,7 @@ func (s *Sloto) tryLock(keys ...Key) (sid SessionID, failed *Key) {
 	sid = SessionID(uuid.New().String())
 	s.sessions[sid] = keys
 	for _, key := range keys {
-		s.keyLocks[key] = LOCKED
+		s.keyLocks[key] = lock
 	}
 	s.scheduleUnlock(sid)
 	return sid, nil
@@ -115,7 +113,7 @@ func (s *Sloto) Lock(keys ...Key) (SessionID, error) {
 			return "", fmt.Errorf("timed out locking key: %s", *failed)
 		}
 
-		jitter := float64(s.lattIntv) * rand.Float64() * JITTER_FRAC
+		jitter := float64(s.lattIntv) * rand.Float64() * jitterFrac
 		<-time.After(s.lattIntv + time.Duration(jitter))
 	}
 }
@@ -131,7 +129,7 @@ func (s *Sloto) Unlock(sid SessionID) {
 	}
 
 	for _, key := range keys {
-		s.keyLocks[key] = UNLOCKED
+		delete(s.keyLocks, key)
 	}
 	delete(s.sessions, sid)
 }
