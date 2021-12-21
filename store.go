@@ -5,34 +5,26 @@ import (
 	"fmt"
 	"log"
 	"strings"
-	"time"
 
-	"github.com/go-redis/redis/v8"
-	"github.com/go-redsync/redsync/v4/redis/goredis/v8"
-	"github.com/google/uuid"
+	"github.com/mplewis/s3kv/backing"
+	"github.com/mplewis/s3kv/sloto"
 	"github.com/thoas/go-funk"
-	"gopkg.in/redsync.v1"
 )
 
 const GLOBAL_NAMESPACE = "s3kv"
 const SESS_KEYS_DELIM = "|"
 
 type Store struct {
-	namespace      string
-	backing        Backing
-	redis          redis.Client
-	lockTimeout    time.Duration
-	sessionTimeout time.Duration
-	locks          redsync.Redsync
+	namespace string
+	backing   backing.Backing
+	sloto     sloto.Sloto
 }
 
 // Args are the arguments for a new store.
 type Args struct {
-	Namespace      string        // Required. The namespace for this store's session and lock keys.
-	Backing        Backing       // Required. The backend for this store, where the data lives and is accessed.
-	Redis          redis.Client  // Required. The Redis client to use for session and lock management.
-	LockTimeout    time.Duration // Optional. The timeout for acquisition of all locks.
-	SessionTimeout time.Duration // Optional. The timeout for a session if it is not closed by a client.
+	Namespace string          // Required. The namespace for this store's session and lock keys.
+	Backing   backing.Backing // Required. The backend for this store, where the data lives and is accessed.
+	Timeouts  *sloto.Args     // Optional. The timeout configuration for this store.
 }
 
 // New builds a new Store.
@@ -40,23 +32,17 @@ func New(args Args) (*Store, error) {
 	if args.Namespace == "" {
 		return nil, errors.New("namespace must not be blank")
 	}
-	if args.LockTimeout == 0 {
-		args.LockTimeout = defaultLockTimeout
+	if args.Backing == nil {
+		return nil, errors.New("backing must not be nil")
 	}
-	if args.SessionTimeout == 0 {
-		args.SessionTimeout = defaultSessionTimeout
+	if args.Timeouts == nil {
+		args.Timeouts = &defaultSlotoArgs
 	}
-
-	// TODO: eventually this needs cluster support
-	pool := goredis.NewPool(args.Redis)
-	rs := redsync.New(pool)
+	sloto := sloto.New(*args.Timeouts)
 	return &Store{
-		namespace:      args.Namespace,
-		backing:        args.Backing,
-		redis:          args.Redis,
-		lockTimeout:    args.LockTimeout,
-		sessionTimeout: args.SessionTimeout,
-		locks:          rs,
+		namespace: args.Namespace,
+		backing:   args.Backing,
+		sloto:     *sloto,
 	}, nil
 }
 
@@ -148,21 +134,6 @@ func (s *Store) Unlock(sid SessionID) error {
 	}
 
 	return nil
-}
-
-// nsKey returns the namespaced Redis key for a key in the store.
-func (s *Store) nsKey(key Key) string {
-	return fmt.Sprintf("%s:%s:%s", GLOBAL_NAMESPACE, s.namespace, key)
-}
-
-// mutex fetches the Redlock mutex for a key in the store.
-func (s *Store) mutex(key Key) *redsync.Mutex {
-	return s.locks.NewMutex(s.nsKey(key), redsync.SetExpiry(s.lockTimeout))
-}
-
-// sessKey returns a new, unique session ID, namespaced for the store.
-func (s *Store) sessKey() SessionID {
-	return SessionID(s.nsKey("sess_" + uuid.New().String()))
 }
 
 // lockKey locks a key.

@@ -40,13 +40,18 @@
 //		return nil
 package s3kv
 
-import "time"
+import (
+	"time"
 
-// defaultLockTimeout is the lock timeout used if none is specified in New().
-const defaultLockTimeout = 15 * time.Second
+	"github.com/mplewis/s3kv/sloto"
+)
 
-// defaultSessionTimeout is the session timeout used if none is specified in New().
-const defaultSessionTimeout = 15 * time.Second
+// defaultSlotoArgs is the configuration used for sloto if none is specified in New().
+var defaultSlotoArgs = sloto.Args{
+	LockAttemptInterval: 100 * time.Millisecond,
+	LockTimeout:         5 * time.Second,
+	SessionTimeout:      15 * time.Second,
+}
 
 // Key is the key for a key-value pair in the store.
 type Key = string

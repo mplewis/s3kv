@@ -39,14 +39,14 @@ type Sloto struct {
 // Args is the set of arguments for creating a new Sloto. All are optional.
 type Args struct {
 	LockAttemptInterval time.Duration // Minimum time to wait between lock attempts (jitter is added automatically).
-	LockAttemptTimeout  time.Duration // How long we try to lock a given set of keys for a new session before giving up.
+	LockTimeout         time.Duration // How long we try to lock a given set of keys for a new session before giving up.
 	SessionTimeout      time.Duration // How long we allow a session to exist before unlocking its keys and closing it.
 }
 
 // Default values for Args values, if unset.
 const (
 	defaultLockAttemptInterval = 100 * time.Millisecond
-	defaultLockAttemptTimeout  = 5 * time.Second
+	defaultLockTimeout         = 5 * time.Second
 	defaultSessionTimeout      = 15 * time.Second
 )
 
@@ -55,15 +55,15 @@ func New(args Args) *Sloto {
 	if args.LockAttemptInterval == 0 {
 		args.LockAttemptInterval = defaultLockAttemptInterval
 	}
-	if args.LockAttemptTimeout == 0 {
-		args.LockAttemptTimeout = defaultLockAttemptTimeout
+	if args.LockTimeout == 0 {
+		args.LockTimeout = defaultLockTimeout
 	}
 	if args.SessionTimeout == 0 {
 		args.SessionTimeout = defaultSessionTimeout
 	}
 	return &Sloto{
 		lattIntv: args.LockAttemptInterval,
-		lockTO:   args.LockAttemptTimeout,
+		lockTO:   args.LockTimeout,
 		sessTO:   args.SessionTimeout,
 		access:   sync.Mutex{},
 		keyLocks: map[Key]locked{},

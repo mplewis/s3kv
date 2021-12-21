@@ -1,4 +1,4 @@
-package s3kv
+package backing
 
 import (
 	"bytes"
@@ -11,36 +11,26 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
-// Backing is an interface by which a Store accesses data in some backend datastore.
-type Backing interface {
-	// List lists all keys in the store with the given prefix. This is likely a very slow operation, so use with caution.
-	List(prefix string) ([]Key, error)
-	// Get returns the value for the given key.
-	Get(key Key) ([]byte, error)
-	// Set sets the value for the given key.
-	Set(key Key, value []byte) error
-	// Del deletes the key-value pair for the given key.
-	Del(key Key) error
-}
+// TODO: What to do about namespace common to backings?
 
-// S3Backing stores data in AWS S3.
-type S3Backing struct {
+// S3 stores data in AWS S3.
+type S3 struct {
 	bucket    string
 	namespace string
 	client    *s3.Client
 	context   context.Context
 }
 
-// S3BackingArgs are the arguments for creating a new S3 backing.
-type S3BackingArgs struct {
+// S3Args are the arguments for creating a new S3 backing.
+type S3Args struct {
 	Bucket    string          // Required. The name of the S3 bucket to use.
 	Namespace string          // Required. The namespace prefixed to all keys when stored in S3.
 	Client    *s3.Client      // Optional. The S3 client to use. If not provided, a client will be automatically configured from your environment.
 	Context   context.Context // Optional. The context to use for S3 operations. If not provided, defaults to context.Background().
 }
 
-// NewS3Backing creates a new backing which stores data in AWS S3.
-func NewS3Backing(args S3BackingArgs) (Backing, error) {
+// NewS3 creates a new backing which stores data in AWS S3.
+func NewS3(args S3Args) (Backing, error) {
 	if args.Context == nil {
 		args.Context = context.Background()
 	}
@@ -51,7 +41,7 @@ func NewS3Backing(args S3BackingArgs) (Backing, error) {
 		}
 		args.Client = s3.NewFromConfig(cfg)
 	}
-	return &S3Backing{
+	return &S3{
 		client:    args.Client,
 		context:   args.Context,
 		bucket:    args.Bucket,
@@ -60,12 +50,12 @@ func NewS3Backing(args S3BackingArgs) (Backing, error) {
 }
 
 // ns appends the namespace prefix to the given key.
-func (s *S3Backing) ns(key Key) Key {
+func (s *S3) ns(key Key) Key {
 	return fmt.Sprintf("%s/%s", s.namespace, key)
 }
 
 // List lists all keys in the store with the given prefix. This is likely a very slow operation, so use with caution.
-func (s *S3Backing) List(prefix string) ([]Key, error) {
+func (s *S3) List(prefix string) ([]Key, error) {
 	var keys []Key
 	paginator := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{Bucket: &s.bucket, Prefix: &prefix})
 	for paginator.HasMorePages() {
@@ -81,7 +71,7 @@ func (s *S3Backing) List(prefix string) ([]Key, error) {
 }
 
 // Get returns the value for the given key.
-func (s *S3Backing) Get(key Key) ([]byte, error) {
+func (s *S3) Get(key Key) ([]byte, error) {
 	r, err := s.client.GetObject(s.context, &s3.GetObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(s.ns(key)),
@@ -93,7 +83,7 @@ func (s *S3Backing) Get(key Key) ([]byte, error) {
 }
 
 // Set sets the value for the given key.
-func (s *S3Backing) Set(key Key, value []byte) error {
+func (s *S3) Set(key Key, value []byte) error {
 	_, err := s.client.PutObject(s.context, &s3.PutObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(s.ns(key)),
@@ -103,7 +93,7 @@ func (s *S3Backing) Set(key Key, value []byte) error {
 }
 
 // Del deletes the key-value pair for the given key.
-func (s *S3Backing) Del(key Key) error {
+func (s *S3) Del(key Key) error {
 	_, err := s.client.DeleteObject(s.context, &s3.DeleteObjectInput{
 		Bucket: aws.String(s.bucket),
 		Key:    aws.String(s.ns(key)),
