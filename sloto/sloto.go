@@ -15,7 +15,7 @@ import (
 type Key = string
 
 // SessionID is a unique identifier for a session, created when a session is created for keys.
-type SessionID string
+type SessionID = string
 
 // jitterFrac is the percentage of jitter to add to a try-lock delay.
 const jitterFrac = 0.1 // 10%

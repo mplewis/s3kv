@@ -20,7 +20,7 @@ var _ = Describe("Sloto", func() {
 	It("works as specified", func() {
 		a := sloto.Args{
 			LockAttemptInterval: 1 * time.Millisecond,
-			LockAttemptTimeout:  10 * time.Millisecond,
+			LockTimeout:         10 * time.Millisecond,
 			SessionTimeout:      100 * time.Millisecond,
 		}
 		s := sloto.New(a)
@@ -47,7 +47,7 @@ var _ = Describe("Sloto", func() {
 	It("passes a stress test", func() {
 		s := sloto.New(sloto.Args{
 			LockAttemptInterval: 100 * time.Millisecond,
-			LockAttemptTimeout:  5 * time.Second,
+			LockTimeout:         5 * time.Second,
 			SessionTimeout:      15 * time.Second,
 		})
 

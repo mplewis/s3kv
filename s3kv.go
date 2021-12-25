@@ -57,4 +57,7 @@ var defaultSlotoArgs = sloto.Args{
 type Key = string
 
 // SessionID is the ID for an open session. Use this to close the session.
-type SessionID string
+type SessionID = string
+
+// Timeouts is the configuration for the store's sloto locks.
+type Timeouts = sloto.Args

@@ -11,8 +11,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
 
-// TODO: What to do about namespace common to backings?
-
 // S3 stores data in AWS S3.
 type S3 struct {
 	bucket    string
